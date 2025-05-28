@@ -49,12 +49,14 @@ class StateGraphNode:
         except TypeError:
             pass
 
+
 """    def __hash__(self):
         return hash(self.state_id)
 
     def __eq__(self, other):
         return isinstance(other, StateGraphNode) and self.state_id == other.state_id
 """
+
 
 class HaifaHeuristic:
     def __init__(self, env: HaifaEnv):
@@ -76,22 +78,7 @@ class HaifaHeuristic:
     def __call__(self, state_id: int) -> float:
         return self.haifa_heuristic(state_id)
 
-class NodeMap:
-    def __init__(self):
-        self.nodes = {}
 
-    def add_node(self, node: StateGraphNode):
-        if node.state_id not in self.nodes:
-            self.nodes[node.state_id] = [node]
-
-    def get_nodes_by_id(self, state_id: int) -> Optional[StateGraphNode]:
-        return self.nodes.get(state_id, None)
-
-    def contains(self, state_id: int) -> bool:
-        return state_id in self.nodes
-
-    def __len__(self):
-        return len(self.nodes)
 class priorityQueue:
     def __init__(self, ):
         self.elements = heapdict.heapdict()
@@ -100,6 +87,8 @@ class priorityQueue:
         """
         Insert an item into the priority queue with the given priority.
         """
+        if item in self.elements:
+            del self.elements[item]  # Remove existing item to update priority
         self.elements[item] = priority
 
     def pop(self):
@@ -135,7 +124,12 @@ class BFSGAgent():
         self.CLOSE = {}
         self.OPEN = []
 
+    def clean(self):
+        self.CLOSE = {}
+        self.OPEN = []
+
     def search(self, env: HaifaEnv) -> Tuple[List[int], float, int]:
+        self.clean()
         init_state = env.reset()
         init_node = StateGraphNode(init_state, father=None, preceded_action=None,
                                    cost=0)  # Initialize the first node
@@ -180,18 +174,22 @@ class UCSAgent():
         self.OPEN = priorityQueue()
         self.CLOSE = {}
         self.nodes = {}
-
+    def clean(self):
+        self.OPEN = priorityQueue()
+        self.CLOSE = {}
+        self.nodes = {}
     def search(self, env: HaifaEnv) -> Tuple[List[int], float, int]:
+        self.clean()
         init_state = env.reset()
         init_node = StateGraphNode(init_state, father=None, preceded_action=None,
                                    cost=0)
         self.nodes[init_node.state_id] = init_node
-        self.OPEN.insert(init_node.state_id, init_node.cost)
+        self.OPEN.insert(init_node.state_id, (init_node.cost, init_node.state_id))
         self.expanded_nodes = 0
         while not self.OPEN.is_empty():
             curr_node_id, curr_cost = self.OPEN.pop()
             curr_node = self.nodes[curr_node_id]
-            self.CLOSE[curr_node] = curr_node_id  # TODO: is it search over the state graph or tree?
+            self.CLOSE[curr_node.state_id] = curr_node_id  # TODO: is it search over the state graph or tree?
 
             if env.is_final_state(curr_node.state_id):
                 return curr_node.actions, curr_node.total_path_cost, self.expanded_nodes
@@ -202,18 +200,17 @@ class UCSAgent():
                     continue
                 successor_node = StateGraphNode(successor[0], father=curr_node, preceded_action=action,
                                                 cost=successor[1])
-                self.nodes[successor_node.state_id] = successor_node
-
-                in_open = self.OPEN.contains(successor_node)
-                in_close = successor_node.state_id in self.CLOSE
+                in_open = successor_node.state_id in self.OPEN.elements.keys()
+                in_close = successor_node.state_id in self.CLOSE.keys()
 
                 if not in_close and not in_open:
-                    self.OPEN.insert(successor_node.state_id, successor_node.total_path_cost)
+                    self.nodes[successor_node.state_id] = successor_node
+                    self.OPEN.insert(successor_node.state_id, (successor_node.total_path_cost, successor_node.state_id))
+                elif in_open and successor_node.total_path_cost < self.OPEN.elements[successor_node.state_id][0]:
+                    self.nodes[successor_node.state_id] = successor_node
+                    self.OPEN.insert(successor_node.state_id, (successor_node.total_path_cost, successor_node.state_id))
 
-                elif in_open and successor_node.total_path_cost < self.OPEN.elements[successor_node]:
-                    self.OPEN.insert(successor_node.state_id, successor_node.total_path_cost)
-
-        return [], 0, len(self.CLOSE)  # Return empty path and inf cost
+        return [], np.inf, len(self.CLOSE)  # Return empty path and inf cost
 
 
 class WeightedAStarAgent():
@@ -221,28 +218,43 @@ class WeightedAStarAgent():
     def __init__(self):
         self.OPEN = priorityQueue()
         self.CLOSE = {}
+        self.nodes = {}
+        self.expanded_nodes = set()
         self.heuristic = None  # to be initialized in search()
 
+    def clean(self):
+        """
+        Clean the OPEN and CLOSE lists for a new search.
+        """
+        self.OPEN = priorityQueue()
+        self.CLOSE = {}
+        self.nodes = {}
+        self.expanded_nodes = set()
     def f(self, node: StateGraphNode, h_weight: float) -> float:
         """
         f(n) = g(n) + w * h(n)
         """
-        return node.total_path_cost + h_weight * self.heuristic(node.state_id)
+        return node.total_path_cost + (h_weight * self.heuristic(node.state_id))
 
     def search(self, env: HaifaEnv, h_weight) -> Tuple[List[int], float, int]:
+        self.clean()
         self.heuristic = HaifaHeuristic(env)
         init_state = env.reset()
         init_node = StateGraphNode(init_state, father=None, preceded_action=None,
                                    cost=0)
-        self.OPEN.insert(init_node, self.f(init_node, h_weight))
+        self.nodes[init_node.state_id] = init_node
+        self.OPEN.insert(init_node.state_id, (self.f(init_node, h_weight), init_node.state_id))
+
         while not self.OPEN.is_empty():
-            curr_node, curr_cost = self.OPEN.pop()
+            curr_node_id, curr_cost = self.OPEN.pop()
+            curr_node = self.nodes[curr_node_id]
             self.CLOSE[curr_node.state_id] = self.f(curr_node,
                                                     h_weight)  # TODO: is it search over the state graph or tree?
 
             if env.is_final_state(curr_node.state_id):
-                return curr_node.actions, curr_node.total_path_cost, len(self.CLOSE)
+                return curr_node.actions, curr_node.total_path_cost, len(self.expanded_nodes)
 
+            self.expanded_nodes.add(curr_node.state_id)
             for action, successor in env.succ(curr_node.state_id).items():
                 if successor == (None, None, None):
                     continue
@@ -250,18 +262,23 @@ class WeightedAStarAgent():
                 successor_node = StateGraphNode(successor[0], father=curr_node, preceded_action=action,
                                                 cost=successor[1])
 
-                in_open = self.OPEN.contains(successor_node)
+                in_open = successor_node.state_id in self.OPEN.elements.keys()
                 in_close = successor_node.state_id in self.CLOSE
 
                 if not in_close and not in_open:
-                    self.OPEN.insert(successor_node, self.f(successor_node, h_weight))
+                    self.nodes[successor_node.state_id] = successor_node
+                    self.OPEN.insert(successor_node.state_id, (self.f(successor_node, h_weight), successor_node.state_id))
 
-                elif in_open and self.f(successor_node, h_weight) < self.OPEN.elements[successor_node]:
-                    self.OPEN.insert(successor_node, self.f(successor_node, h_weight))
-
+                elif in_open and self.f(successor_node, h_weight) < self.OPEN.elements[successor_node.state_id][0]:
+                    self.OPEN.remove(successor_node.state_id)
+                    self.nodes[successor_node.state_id] = successor_node
+                    self.OPEN.insert(successor_node.state_id, (self.f(successor_node, h_weight), successor_node.state_id))
                 elif in_close and self.f(successor_node, h_weight) < self.CLOSE[successor_node.state_id]:
-                    self.OPEN.insert(successor_node, self.f(successor_node, h_weight))
-                    self.CLOSE[successor_node.state_id] = self.f(successor_node, h_weight)
+                    self.OPEN.remove(successor_node.state_id)
+                    self.nodes[successor_node.state_id] = successor_node
+                    self.OPEN.insert(successor_node.state_id, (self.f(successor_node, h_weight), successor_node.state_id))
+                    del self.CLOSE[successor_node.state_id]
+
 
 class AStarAgent(WeightedAStarAgent):
     def __init__(self):
